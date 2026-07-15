@@ -11,7 +11,6 @@ import {
   Download,
   FileArchive,
   FileDown,
-  FileSpreadsheet,
   FolderOpen,
   History,
   Keyboard,
@@ -25,15 +24,12 @@ import {
   RotateCcw,
   Search,
   Settings,
-  ShieldCheck,
   Volume2,
   VolumeX,
   X,
   XCircle,
 } from "lucide-react";
 import {
-  type ChangeEvent,
-  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -58,12 +54,13 @@ import {
   restoreBackup,
   scansToCsv,
 } from "./lib/exports";
-import { parseDelimitedRecall, parseRecallFile } from "./lib/importers";
+import { CampaignItemManagerDrawer } from "./components/CampaignItemManagerDrawer";
+import { RecallIntake, type RecallIntakeValue } from "./components/RecallIntake";
+import { applyOptionalLocalPatch } from "./lib/localPatch";
 import type {
   Campaign,
   CampaignSnapshot,
   CampaignStatus,
-  ImportResult,
   RecordedScanResult,
   ScanOutcome,
 } from "./types";
@@ -79,6 +76,12 @@ const DEFAULT_LOCATION = "Philadelphia, PA";
 const LAST_SCREEN_KEY = "recall-router:last-screen";
 const LOCK_TTL_MS = 12_000;
 const TAB_ID = crypto.randomUUID();
+let startupPatchPromise: ReturnType<typeof applyOptionalLocalPatch> | null = null;
+
+function applyStartupPatchOnce() {
+  startupPatchPromise ??= applyOptionalLocalPatch();
+  return startupPatchPromise;
+}
 
 const statusOrder: CampaignStatus[] = [
   "active",
@@ -405,7 +408,7 @@ function LibraryView({
         <div className="empty-state">
           <FolderOpen size={38} />
           <h2>No recall lists yet</h2>
-          <p>Upload a CSV, TSV, XLSX, or XLS file to start scanning.</p>
+          <p>Upload a spreadsheet, PDF, or clear list photos—or paste rows—to start scanning.</p>
           <button className="primary-button" onClick={onStartNew}>
             <Plus size={20} /> Start first recall
           </button>
@@ -460,55 +463,23 @@ function NewRecallDrawer({
     recallReference: "",
     locationName: DEFAULT_LOCATION,
   });
-  const [mode, setMode] = useState<"file" | "paste">("file");
-  const [pasteValue, setPasteValue] = useState("");
-  const [result, setResult] = useState<ImportResult | null>(null);
-  const [parsing, setParsing] = useState(false);
+  const [intake, setIntake] = useState<RecallIntakeValue>({
+    result: null,
+    ready: false,
+    assisted: false,
+  });
   const [creating, setCreating] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
-
-  const parseFile = async (file: File) => {
-    if (file.size > 25 * 1024 * 1024) {
-      pushToast("That file is larger than the 25 MB safety limit.", true);
-      return;
-    }
-    setParsing(true);
-    try {
-      const parsed = await parseRecallFile(file);
-      setResult(parsed);
-      if (!form.brand && parsed.rows[0]?.brand) {
-        setForm((current) => ({ ...current, brand: parsed.rows[0].brand || "" }));
-      }
-      pushToast(`${parsed.rows.length} recall rows are ready to review.`);
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "That file could not be read.", true);
-    } finally {
-      setParsing(false);
-    }
-  };
-
-  const parsePaste = () => {
-    try {
-      const parsed = parseDelimitedRecall(pasteValue, {}, "pasted-recall-list.csv");
-      setResult(parsed);
-      if (!form.brand && parsed.rows[0]?.brand) {
-        setForm((current) => ({ ...current, brand: parsed.rows[0].brand || "" }));
-      }
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Those pasted rows could not be read.", true);
-    }
-  };
 
   const createRecall = async () => {
     if (!form.brand.trim() || !form.name.trim() || !form.locationName.trim()) {
       pushToast("Brand, recall name, and location are required.", true);
       return;
     }
-    if (!result?.rows.length) {
+    if (!intake.ready || !intake.result?.rows.length) {
       pushToast("Add a recall list with at least one valid barcode.", true);
       return;
     }
+    const result = intake.result;
     setCreating(true);
     try {
       const created = await createCampaignWithItems(
@@ -588,132 +559,22 @@ function NewRecallDrawer({
             </div>
           </div>
 
-          <div className="input-tabs" role="tablist" aria-label="Recall list input method">
-            <button
-              className={`input-tab ${mode === "file" ? "active" : ""}`}
-              onClick={() => setMode("file")}
-              role="tab"
-              aria-selected={mode === "file"}
-            >
-              Upload list
-            </button>
-            <button
-              className={`input-tab ${mode === "paste" ? "active" : ""}`}
-              onClick={() => setMode("paste")}
-              role="tab"
-              aria-selected={mode === "paste"}
-            >
-              Paste rows
-            </button>
-          </div>
-
-          {mode === "file" ? (
-            <>
-              <input
-                ref={fileInput}
-                className="sr-only"
-                type="file"
-                accept=".csv,.tsv,.xlsx,.xls,text/csv,text/tab-separated-values"
-                onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                  const file = event.target.files?.[0];
-                  if (file) void parseFile(file);
-                  event.target.value = "";
-                }}
-              />
-              <div
-                className={`drop-zone ${dragging ? "dragging" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => fileInput.current?.click()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") fileInput.current?.click();
-                }}
-                onDragOver={(event: DragEvent<HTMLDivElement>) => {
-                  event.preventDefault();
-                  setDragging(true);
-                }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={(event: DragEvent<HTMLDivElement>) => {
-                  event.preventDefault();
-                  setDragging(false);
-                  const file = event.dataTransfer.files?.[0];
-                  if (file) void parseFile(file);
-                }}
-              >
-                <FileSpreadsheet size={34} aria-hidden="true" />
-                <strong>{parsing ? "Reading recall list…" : "Drop a recall list here"}</strong>
-                <span>or click to choose a file</span>
-                <small>CSV, TSV, XLSX, or XLS · up to 25 MB</small>
-              </div>
-              <a className="ghost-button" href={`${import.meta.env.BASE_URL}recall-list-template.csv`} download>
-                <Download size={18} /> Download a clean template
-              </a>
-            </>
-          ) : (
-            <div className="field">
-              <label htmlFor="paste-rows">Paste a header row and recall items</label>
-              <textarea
-                id="paste-rows"
-                value={pasteValue}
-                onChange={(event) => setPasteValue(event.target.value)}
-                placeholder={"UPC,Brand,Model,Color,Quantity\n036000291452,Example Optical,A100,Black,1"}
-              />
-              <button className="secondary-button" onClick={parsePaste} disabled={!pasteValue.trim()}>
-                <ListChecks size={18} /> Review pasted rows
-              </button>
-            </div>
-          )}
-
-          {result ? (
-            <>
-              <div className="mapping-card">
-                <h3>Import preview · {result.rows.length} valid items</h3>
-                <div className="preview-scroll">
-                  <table className="preview-table">
-                    <thead>
-                      <tr><th>Barcode</th><th>Description</th><th>Qty</th></tr>
-                    </thead>
-                    <tbody>
-                      {result.rows.slice(0, 8).map((row, index) => (
-                        <tr key={`${row.barcode}-${index}`}>
-                          <td>{row.barcode}</td>
-                          <td>{row.description || row.model || "—"}</td>
-                          <td>{row.quantity || 1}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              {result.rejected.length ? (
-                <div className="notice warning">
-                  <AlertTriangle size={19} />
-                  <span>
-                    {result.rejected.length} row{result.rejected.length === 1 ? "" : "s"} cannot be imported. The valid rows above will be used; review the source before continuing.
-                  </span>
-                </div>
-              ) : (
-                <div className="notice success">
-                  <ShieldCheck size={19} />
-                  <span>All rows have a usable barcode. You will confirm the active recall before scanning.</span>
-                </div>
-              )}
-              {result.warnings.map((warning) => (
-                <div className="notice warning" key={warning}>
-                  <AlertTriangle size={19} /> <span>{warning}</span>
-                </div>
-              ))}
-            </>
-          ) : null}
+          <RecallIntake
+            onChange={setIntake}
+            onBrandDetected={(brand) => {
+              setForm((current) => current.brand.trim() ? current : { ...current, brand });
+            }}
+            pushToast={pushToast}
+          />
         </div>
         <div className="drawer-actions">
           <button className="secondary-button" onClick={onClose}>Cancel</button>
           <button
             className="primary-button"
             onClick={() => void createRecall()}
-            disabled={creating || !result?.rows.length}
+            disabled={creating || !intake.ready}
           >
-            <Play size={19} /> {creating ? "Creating…" : `Start scanning${result ? ` ${result.rows.length} items` : ""}`}
+            <Play size={19} /> {creating ? "Creating…" : `Start scanning${intake.result ? ` ${intake.result.rows.length} items` : ""}`}
           </button>
         </div>
       </aside>
@@ -826,12 +687,14 @@ function ScannerView({
   snapshot,
   onBack,
   onReport,
+  onManage,
   onRefresh,
   pushToast,
 }: {
   snapshot: CampaignSnapshot;
   onBack: () => void;
   onReport: () => void;
+  onManage: () => Promise<void>;
   onRefresh: () => Promise<CampaignSnapshot | null>;
   pushToast: (message: string, error?: boolean) => void;
 }) {
@@ -979,6 +842,9 @@ function ScannerView({
           <div className="library-toolbar no-print">
             <button className="secondary-button" onClick={onBack}><ArrowLeft size={18} /> Library</button>
             <button className="secondary-button" onClick={onReport}><Printer size={18} /> Report / PDF</button>
+            <button className="secondary-button" onClick={() => void onManage()} disabled={locked}>
+              <Plus size={18} /> Manage list
+            </button>
             {snapshot.campaign.status === "paused" ? (
               <button className="primary-button" onClick={() => void updateStatus("active")}><Play size={18} /> Resume</button>
             ) : (
@@ -1055,8 +921,8 @@ function ScannerView({
                           <td>{scan.barcode || scan.rawValue}</td>
                           <td>
                             <span className={`result-badge ${scan.outcome}`}>
-                              {scan.outcome === "match" ? <CheckCircle2 size={15} /> : scan.outcome === "miss" ? <XCircle size={15} /> : scan.outcome === "legacy" ? <Database size={15} /> : <RotateCcw size={15} />}
-                              {scan.outcome === "match" ? (scan.isRepeatMatch ? "KEEP · extra" : "KEEP") : scan.outcome === "miss" ? "LEAVE" : scan.outcome === "legacy" ? "IMPORTED SUMMARY" : "SCAN AGAIN"}
+                              {scan.source === "legacy" ? <Database size={15} /> : scan.outcome === "match" ? <CheckCircle2 size={15} /> : scan.outcome === "miss" ? <XCircle size={15} /> : <RotateCcw size={15} />}
+                              {scan.source === "legacy" ? (scan.outcome === "match" ? "IMPORTED KEEP" : "IMPORTED SUMMARY") : scan.outcome === "match" ? (scan.isRepeatMatch ? "KEEP · extra" : "KEEP") : scan.outcome === "miss" ? "LEAVE" : "SCAN AGAIN"}
                             </span>
                           </td>
                           <td>{scan.itemDescription || "—"}</td>
@@ -1231,6 +1097,7 @@ export default function App() {
   const [activeSnapshot, setActiveSnapshot] = useState<CampaignSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [newRecallOpen, setNewRecallOpen] = useState(false);
+  const [itemManagerOpen, setItemManagerOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Campaign | null>(null);
   const { toasts, pushToast } = useToasts();
 
@@ -1261,9 +1128,24 @@ export default function App() {
     let alive = true;
     void (async () => {
       try {
+        const patch = await applyStartupPatchOnce();
+        if (!alive) return;
         await refreshAll();
+        if (patch.found && (patch.itemsAdded || patch.legacyMigrated)) {
+          const additions = patch.campaignCreated
+            ? `${patch.itemsAdded}-row recall loaded`
+            : patch.itemsAdded
+              ? `${patch.itemsAdded} missing recall row${patch.itemsAdded === 1 ? "" : "s"} added`
+            : "Recall rows verified";
+          const progress = patch.legacyMigrated
+            ? `; ${patch.legacyPulledCount} previously pulled UPC${patch.legacyPulledCount === 1 ? "" : "s"} restored`
+            : "";
+          pushToast(`${additions}${progress}. Existing work was preserved.`);
+        }
       } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Recall Router could not open its local database.", true);
+        if (alive) {
+          pushToast(error instanceof Error ? error.message : "Recall Router could not open its local database.", true);
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -1282,6 +1164,21 @@ export default function App() {
 
   const openScanner = (campaignId: string) => setScreen({ name: "scanner", campaignId });
   const openReport = (campaignId: string) => setScreen({ name: "report", campaignId });
+
+  const openItemManager = async () => {
+    if (!activeSnapshot) return;
+    if (activeSnapshot.campaign.status !== "paused") {
+      const now = new Date().toISOString();
+      await db.campaigns.update(activeSnapshot.campaign.id, {
+        status: "paused",
+        pausedAt: now,
+        updatedAt: now,
+      });
+      pushToast("Scanning paused while you safely update this recall list.");
+    }
+    const refreshed = await refreshCampaign();
+    if (refreshed?.campaign.status === "paused") setItemManagerOpen(true);
+  };
 
   const handleArchive = async () => {
     if (!archiveTarget) return;
@@ -1367,6 +1264,7 @@ export default function App() {
           snapshot={activeSnapshot}
           onBack={() => setScreen({ name: "library" })}
           onReport={() => openReport(activeSnapshot.campaign.id)}
+          onManage={openItemManager}
           onRefresh={refreshCampaign}
           pushToast={pushToast}
         />
@@ -1395,6 +1293,18 @@ export default function App() {
           }}
           pushToast={pushToast}
         />
+      ) : null}
+      {itemManagerOpen && activeSnapshot ? (
+        <div className="overlay" role="presentation" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setItemManagerOpen(false);
+        }}>
+          <CampaignItemManagerDrawer
+            snapshot={activeSnapshot}
+            onClose={() => setItemManagerOpen(false)}
+            onUpdated={async () => { await refreshCampaign(); }}
+            pushToast={pushToast}
+          />
+        </div>
       ) : null}
       {archiveTarget ? (
         <ConfirmDialog campaign={archiveTarget} onCancel={() => setArchiveTarget(null)} onConfirm={() => void handleArchive()} />

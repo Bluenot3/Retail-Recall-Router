@@ -17,17 +17,17 @@ Use the same browser profile every time. Private/InPrivate windows are not appro
 
 ## 2. Prepare a recall list
 
-Accepted file types are CSV, TSV, XLSX, and XLS. The minimum useful field is a barcode identifier such as UPC or GTIN. Brand, model/style, color, description, quantity, and notes improve staff confirmation and reports.
+Accepted file types are CSV, TSV, XLSX, XLS, PDF, JPG, PNG, and WebP; rows can also be pasted. The minimum useful field is a barcode identifier such as UPC or GTIN. Brand, model/style, color, description, quantity, and notes improve staff confirmation and reports.
 
 Before importing:
 
 - Save a copy of the original recall document in the company-approved recall folder.
-- Convert image-only PDFs through an approved process before import; do not assume text can be extracted safely from a scan.
+- Use clear, straight-on photos with the complete table visible. Multiple photos should cover separate pages, not overlapping copies of the same rows.
 - Format UPC and GTIN spreadsheet cells as text to preserve leading zeros.
 - Remove totals, section headings, blank lines, and instructions from the item table when practical.
 - Do not add patient information or other PHI.
 
-The import review must show the expected number of unique recall identifiers. Investigate skipped rows, missing identifiers, and duplicate identifiers before activation. Do not start scanning if the imported count cannot be reconciled to the source list.
+The import review must show the expected number of unique recall identifiers. For PDFs and photos, compare every editable candidate to the source and complete the required review checkbox. Investigate skipped rows, missing identifiers, and duplicate identifiers before activation. Do not start scanning if the imported count cannot be reconciled to the source list. Files must contain product information only—never patient information or PHI.
 
 ## 3. Create and activate a recall
 
@@ -38,6 +38,16 @@ The import review must show the expected number of unique recall identifiers. In
 5. Confirm the identifier, brand, model/style, color, quantity, and notes mappings.
 6. Review valid, duplicate, and skipped row counts.
 7. Activate only after the source total and imported unique count are understood.
+
+### Correct a list already in progress
+
+1. Choose **Manage list**. The app pauses the recall before any list change.
+2. Upload or paste the addendum, or select **Add one frame** for a manual row.
+3. Compare the preview: new UPCs will be added and existing UPCs will be skipped.
+4. Confirm only after the new-row count matches the source.
+5. Choose **Done**, then **Resume** scanning.
+
+Adding rows never resets existing scans, quantities found, or history. A UPC scanned earlier as red remains a historical red scan; scan the physical frame again after adding it. Completed and archived recalls are read-only.
 
 Use one active recall at a time at a scanning station. If multiple brand recalls are open, staff must confirm the correct active recall before scanning.
 

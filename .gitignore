@@ -32,4 +32,6 @@ backups/
 exports/
 local-data/
 uploads/
+public/ocr/
+public/local-recall-patch.json
 *.recall-backup.json
