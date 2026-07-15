@@ -71,12 +71,57 @@ type Screen =
   | { name: "report"; campaignId: string };
 
 type Toast = { id: string; message: string; error?: boolean };
+type VisualFeedbackMode = "bold" | "pulse" | "calm";
+type SoundPattern = "chime" | "double" | "beep";
+
+type FeedbackPreferences = {
+  soundEnabled: boolean;
+  volume: number;
+  soundPattern: SoundPattern;
+  visualMode: VisualFeedbackMode;
+};
 
 const DEFAULT_LOCATION = "Philadelphia, PA";
 const LAST_SCREEN_KEY = "recall-router:last-screen";
+const FEEDBACK_PREFERENCES_KEY = "recall-router:feedback-v1";
 const LOCK_TTL_MS = 12_000;
 const TAB_ID = crypto.randomUUID();
 let startupPatchPromise: ReturnType<typeof applyOptionalLocalPatch> | null = null;
+
+const DEFAULT_FEEDBACK_PREFERENCES: FeedbackPreferences = {
+  soundEnabled: true,
+  volume: 80,
+  soundPattern: "chime",
+  visualMode: "pulse",
+};
+
+function loadFeedbackPreferences(): FeedbackPreferences {
+  const legacySoundEnabled = localStorage.getItem("recall-router:sound") !== "off";
+  try {
+    const stored = JSON.parse(localStorage.getItem(FEEDBACK_PREFERENCES_KEY) || "null") as Partial<FeedbackPreferences> | null;
+    if (!stored) return { ...DEFAULT_FEEDBACK_PREFERENCES, soundEnabled: legacySoundEnabled };
+    const volume = typeof stored.volume === "number" ? Math.min(100, Math.max(0, stored.volume)) : 80;
+    const soundPattern: SoundPattern = ["chime", "double", "beep"].includes(stored.soundPattern || "")
+      ? stored.soundPattern as SoundPattern
+      : "chime";
+    const visualMode: VisualFeedbackMode = ["bold", "pulse", "calm"].includes(stored.visualMode || "")
+      ? stored.visualMode as VisualFeedbackMode
+      : "pulse";
+    return {
+      soundEnabled: typeof stored.soundEnabled === "boolean" ? stored.soundEnabled : legacySoundEnabled,
+      volume,
+      soundPattern,
+      visualMode,
+    };
+  } catch {
+    return { ...DEFAULT_FEEDBACK_PREFERENCES, soundEnabled: legacySoundEnabled };
+  }
+}
+
+function saveFeedbackPreferences(preferences: FeedbackPreferences) {
+  localStorage.setItem(FEEDBACK_PREFERENCES_KEY, JSON.stringify(preferences));
+  localStorage.setItem("recall-router:sound", preferences.soundEnabled ? "on" : "off");
+}
 
 function applyStartupPatchOnce() {
   startupPatchPromise ??= applyOptionalLocalPatch();
@@ -199,12 +244,14 @@ function Topbar({
   saved = true,
   soundOn,
   onToggleSound,
+  onOpenSettings,
 }: {
   onHome: () => void;
   location?: string;
   saved?: boolean;
   soundOn?: boolean;
   onToggleSound?: () => void;
+  onOpenSettings?: () => void;
 }) {
   return (
     <header className="topbar no-print">
@@ -245,9 +292,11 @@ function Topbar({
         >
           <CircleHelp size={19} /> <span>Help</span>
         </button>
-        <button className="icon-button" aria-label="Settings" title="Settings coming after the first release">
-          <Settings size={20} />
-        </button>
+        {onOpenSettings ? (
+          <button className="icon-button" onClick={onOpenSettings} aria-label="Scan feedback settings" title="Scan feedback settings">
+            <Settings size={20} />
+          </button>
+        ) : null}
       </div>
     </header>
   );
@@ -582,31 +631,139 @@ function NewRecallDrawer({
   );
 }
 
-function playFeedback(outcome: ScanOutcome, enabled: boolean) {
-  if (!enabled) return;
+let feedbackAudioContext: AudioContext | null = null;
+
+function playFeedback(outcome: ScanOutcome, preferences: FeedbackPreferences) {
+  if (!preferences.soundEnabled || preferences.volume <= 0) return;
   try {
     const AudioContextCtor = window.AudioContext ||
       (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) return;
-    const context = new AudioContextCtor();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.frequency.value = outcome === "match" ? 760 : outcome === "miss" ? 220 : 430;
-    oscillator.type = outcome === "invalid" ? "triangle" : "sine";
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.09, context.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.14);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.15);
-    oscillator.addEventListener("ended", () => void context.close());
+    feedbackAudioContext ??= new AudioContextCtor();
+    const context = feedbackAudioContext;
+    if (context.state === "suspended") void context.resume();
+
+    const peak = 0.035 + (preferences.volume / 100) * 0.185;
+    const baseFrequency = outcome === "match" ? 760 : outcome === "miss" ? 220 : 430;
+    const pattern = preferences.soundPattern === "double"
+      ? [{ offset: 0, frequency: baseFrequency }, { offset: 0.13, frequency: outcome === "match" ? 950 : baseFrequency }]
+      : preferences.soundPattern === "beep"
+        ? [{ offset: 0, frequency: baseFrequency }]
+        : outcome === "match"
+          ? [{ offset: 0, frequency: 690 }, { offset: 0.1, frequency: 880 }]
+          : [{ offset: 0, frequency: baseFrequency }];
+    const duration = preferences.soundPattern === "beep" ? 0.09 : 0.14;
+
+    pattern.forEach(({ offset, frequency }) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = context.currentTime + offset;
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.frequency.setValueAtTime(frequency, start);
+      oscillator.type = preferences.soundPattern === "beep" ? "square" : outcome === "invalid" ? "triangle" : "sine";
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(peak, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.01);
+    });
   } catch {
     // Text and color remain the source of truth when audio is unavailable.
   }
 }
 
-function ResultPanel({ result }: { result: RecordedScanResult | null }) {
+function FeedbackSettingsDialog({
+  preferences,
+  onChange,
+  onClose,
+  onPreview,
+}: {
+  preferences: FeedbackPreferences;
+  onChange: (patch: Partial<FeedbackPreferences>) => void;
+  onClose: () => void;
+  onPreview: () => void;
+}) {
+  const visualOptions: Array<{ value: VisualFeedbackMode; label: string; detail: string }> = [
+    { value: "bold", label: "Bold", detail: "Strong border and quick pop" },
+    { value: "pulse", label: "Color pulse", detail: "Bright edge pulse for fast scanning" },
+    { value: "calm", label: "Calm", detail: "Color and words with minimal motion" },
+  ];
+
+  return (
+    <div className="dialog-overlay" role="presentation" onMouseDown={(event) => {
+      if (event.currentTarget === event.target) onClose();
+    }}>
+      <div className="dialog feedback-settings" role="dialog" aria-modal="true" aria-labelledby="feedback-settings-title">
+        <div className="dialog-header">
+          <div>
+            <h2 id="feedback-settings-title">Scan feedback</h2>
+            <p>Make every result easy to hear and recognize.</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close scan feedback settings"><X size={20} /></button>
+        </div>
+        <div className="dialog-body">
+          <label className="feedback-toggle">
+            <span><strong>Sound</strong><small>Play a distinct tone after each scan</small></span>
+            <input
+              type="checkbox"
+              checked={preferences.soundEnabled}
+              onChange={(event) => onChange({ soundEnabled: event.target.checked })}
+            />
+          </label>
+          <label className="feedback-control">
+            <span><strong>Volume</strong><small>{preferences.volume}%</small></span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="10"
+              value={preferences.volume}
+              disabled={!preferences.soundEnabled}
+              onChange={(event) => onChange({ volume: Number(event.target.value) })}
+            />
+          </label>
+          <label className="feedback-control">
+            <span><strong>Sound style</strong><small>Choose the clearest pattern for your workspace</small></span>
+            <select
+              value={preferences.soundPattern}
+              disabled={!preferences.soundEnabled}
+              onChange={(event) => onChange({ soundPattern: event.target.value as SoundPattern })}
+            >
+              <option value="chime">Clear chime</option>
+              <option value="double">Double alert</option>
+              <option value="beep">Short beep</option>
+            </select>
+          </label>
+          <fieldset className="feedback-visual-fieldset">
+            <legend>Visual style</legend>
+            <div className="feedback-mode-grid">
+              {visualOptions.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  className={`feedback-mode ${preferences.visualMode === option.value ? "selected" : ""}`}
+                  onClick={() => onChange({ visualMode: option.value })}
+                  aria-pressed={preferences.visualMode === option.value}
+                >
+                  <span className={`feedback-mode-swatch ${option.value}`} aria-hidden="true" />
+                  <strong>{option.label}</strong>
+                  <small>{option.detail}</small>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+        <div className="dialog-actions">
+          <button className="secondary-button" onClick={onPreview} disabled={!preferences.soundEnabled}>Preview sound</button>
+          <button className="primary-button" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResultPanel({ result, visualMode }: { result: RecordedScanResult | null; visualMode: VisualFeedbackMode }) {
   const outcome = result?.scan.outcome;
   const state = !result ? "ready" : outcome === "match" ? "match" : outcome === "miss" ? "miss" : "invalid";
   const isRepeat = Boolean(result?.alreadyMatched);
@@ -638,7 +795,7 @@ function ResultPanel({ result }: { result: RecordedScanResult | null }) {
   const Icon = state === "match" ? Check : state === "miss" ? X : state === "invalid" ? RotateCcw : Barcode;
 
   return (
-    <section className={`result-panel ${state}`} aria-live="assertive" aria-atomic="true">
+    <section className={`result-panel ${state} visual-${visualMode}`} aria-live="assertive" aria-atomic="true">
       <div className="result-inner">
         <div className="result-icon"><Icon size={48} strokeWidth={2.6} /></div>
         <p className="result-kicker">{copy.kicker}</p>
@@ -702,7 +859,8 @@ function ScannerView({
   const [lastResult, setLastResult] = useState<RecordedScanResult | null>(null);
   const [working, setWorking] = useState(false);
   const [search, setSearch] = useState("");
-  const [soundOn, setSoundOn] = useState(() => localStorage.getItem("recall-router:sound") !== "off");
+  const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
+  const [feedbackSettingsOpen, setFeedbackSettingsOpen] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const autoTimer = useRef<number | undefined>(undefined);
@@ -713,6 +871,10 @@ function ScannerView({
   }, [snapshot.campaign.id]);
 
   useEffect(() => () => window.clearTimeout(autoTimer.current), []);
+
+  useEffect(() => {
+    saveFeedbackPreferences(feedbackPreferences);
+  }, [feedbackPreferences]);
 
   const submitScan = useCallback(async (value = input) => {
     const raw = value.trim();
@@ -727,7 +889,7 @@ function ScannerView({
       setLastResult(result);
       setInput("");
       setSaveFailed(false);
-      playFeedback(result.scan.outcome, soundOn);
+      playFeedback(result.scan.outcome, feedbackPreferences);
       await onRefresh();
     } catch (error) {
       setSaveFailed(true);
@@ -739,7 +901,7 @@ function ScannerView({
       setWorking(false);
       window.setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [input, locked, onRefresh, pushToast, snapshot.campaign.id, soundOn, working]);
+  }, [feedbackPreferences, input, locked, onRefresh, pushToast, snapshot.campaign.id, working]);
 
   const scheduleAutoSubmit = (value: string) => {
     window.clearTimeout(autoTimer.current);
@@ -810,13 +972,12 @@ function ScannerView({
         onHome={onBack}
         location={snapshot.campaign.locationName}
         saved={!saveFailed}
-        soundOn={soundOn}
+        soundOn={feedbackPreferences.soundEnabled}
         onToggleSound={() => {
-          const next = !soundOn;
-          setSoundOn(next);
-          localStorage.setItem("recall-router:sound", next ? "on" : "off");
+          setFeedbackPreferences((current) => ({ ...current, soundEnabled: !current.soundEnabled }));
           inputRef.current?.focus();
         }}
+        onOpenSettings={() => setFeedbackSettingsOpen(true)}
       />
       <main className="scanner-page">
         {locked ? (
@@ -865,7 +1026,7 @@ function ScannerView({
 
         <div className="scanner-layout">
           <div className="scan-workspace">
-            <ResultPanel result={lastResult} />
+            <ResultPanel key={lastResult?.scan.id || "ready"} result={lastResult} visualMode={feedbackPreferences.visualMode} />
             <form
               className="scan-entry"
               onSubmit={(event: FormEvent) => {
@@ -982,6 +1143,17 @@ function ScannerView({
           </aside>
         </div>
       </main>
+      {feedbackSettingsOpen ? (
+        <FeedbackSettingsDialog
+          preferences={feedbackPreferences}
+          onChange={(patch) => setFeedbackPreferences((current) => ({ ...current, ...patch }))}
+          onClose={() => {
+            setFeedbackSettingsOpen(false);
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+          }}
+          onPreview={() => playFeedback("match", feedbackPreferences)}
+        />
+      ) : null}
     </>
   );
 }
@@ -1128,10 +1300,17 @@ export default function App() {
     let alive = true;
     void (async () => {
       try {
-        const patch = await applyStartupPatchOnce();
+        let patch: Awaited<ReturnType<typeof applyOptionalLocalPatch>> | null = null;
+        try {
+          patch = await applyStartupPatchOnce();
+        } catch (error) {
+          if (alive) {
+            pushToast(error instanceof Error ? error.message : "An optional local recall update could not be applied.", true);
+          }
+        }
         if (!alive) return;
         await refreshAll();
-        if (patch.found && (patch.itemsAdded || patch.legacyMigrated)) {
+        if (patch?.found && (patch.itemsAdded || patch.legacyMigrated)) {
           const additions = patch.campaignCreated
             ? `${patch.itemsAdded}-row recall loaded`
             : patch.itemsAdded

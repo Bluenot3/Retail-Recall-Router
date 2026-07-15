@@ -45,6 +45,12 @@ function fetchResponse(body: unknown, status = 200): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
+function failedFetch(): typeof fetch {
+  return vi.fn(async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+}
+
 function patch(items: ImportedRecallRow[], legacy?: Record<string, string>) {
   return {
     kind: "retail-recall-router-local-patch",
@@ -75,6 +81,20 @@ describe("optional local recall patch", () => {
     expect(await database.scans.count()).toBe(0);
     expect(await database.settings.count()).toBe(0);
     expect(localStorage.length).toBe(0);
+  });
+
+  it("keeps the public app usable when the optional patch cannot be fetched offline", async () => {
+    await createCampaignWithItems(testCampaign, testRecallRows, database);
+
+    const result = await applyOptionalLocalPatch({
+      database,
+      fetchImpl: failedFetch(),
+      storage: localStorage,
+    });
+
+    expect(result.found).toBe(false);
+    expect(await database.campaigns.count()).toBe(1);
+    expect(await database.items.count()).toBe(testRecallRows.length);
   });
 
   it("adds seven unseen rows to an active campaign without changing progress or scans", async () => {

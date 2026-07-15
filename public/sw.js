@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'retail-recall-router-v2'
+const CACHE_VERSION = 'retail-recall-router-v3'
 const APP_SHELL = [
   './',
   './index.html',

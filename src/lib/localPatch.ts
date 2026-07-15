@@ -511,12 +511,18 @@ async function fetchValidatedPatch(
   patchUrl: string,
   fetchImpl: typeof fetch,
 ): Promise<ValidatedLocalPatch | null> {
-  const response = await fetchImpl(patchUrl, {
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: { Accept: "application/json" },
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(patchUrl, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    return null;
+  }
   if (response.status === 404 || response.status === 204) return null;
+  if (response.status === 503 && response.statusText === "Offline") return null;
   if (!response.ok) {
     throw new Error(`Local patch request failed with status ${response.status}.`);
   }

@@ -1,5 +1,7 @@
 # Retail Recall Router
 
+Live app: **https://bluenot3.github.io/Retail-Recall-Router/**
+
 Retail Recall Router is a fast, local-first optical frame recall scanner for retail teams. Import a recall list, scan UPC barcodes at full counter speed, and get an immediate decision:
 
 - **Green — KEEP / RECALL:** set the frame aside and cross it off the recall list.
