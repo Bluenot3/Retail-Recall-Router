@@ -1,0 +1,41 @@
+{
+  "name": "Retail Recall Router",
+  "short_name": "Recall Router",
+  "description": "Fast, local-first optical frame recall scanning for retail teams.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f1ea",
+  "theme_color": "#10251f",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./icons/recall-router.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/recall-router-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan active recall",
+      "short_name": "Scan",
+      "url": "./?view=scan",
+      "icons": [{ "src": "./icons/recall-router.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Import recall list",
+      "short_name": "New recall",
+      "url": "./?view=import",
+      "icons": [{ "src": "./icons/recall-router.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}
