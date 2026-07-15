@@ -3,11 +3,18 @@ import { evaluateBarcode, validateBarcode } from "./lib/barcodes";
 import type {
   AppSetting,
   Campaign,
+  CampaignItemMergeCandidate,
+  CampaignItemMergePreview,
+  CampaignItemMergeResult,
+  CampaignItemMutationOptions,
   CampaignSnapshot,
   CampaignStatus,
   CreateCampaignInput,
   ImportedRecallRow,
+  NormalizedRecallRow,
   RecallItem,
+  RecallItemUpdateInput,
+  RecallItemUpdateOptions,
   RecordedScanResult,
   ScanRecord,
   ScanSource,
@@ -44,10 +51,96 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function nextIsoAfter(...values: Array<string | undefined>): string {
+  const latest = values.reduce((maximum, value) => {
+    const parsed = value ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(parsed) ? Math.max(maximum, parsed) : maximum;
+  }, 0);
+  return new Date(Math.max(Date.now(), latest + 1)).toISOString();
+}
+
 function normalizeQuantity(value: number | undefined): number {
   return Number.isFinite(value) && Number(value) > 0
     ? Math.max(1, Math.floor(Number(value)))
     : 1;
+}
+
+function normalizeImportedRows(importedRows: ImportedRecallRow[]): NormalizedRecallRow[] {
+  const combined = new Map<string, NormalizedRecallRow>();
+  for (const row of importedRows) {
+    const validation = validateBarcode(row.barcode);
+    if (!validation.valid || !validation.barcodeKey) {
+      throw new Error(
+        `Recall item on row ${row.sourceRowNumber ?? "unknown"} has an invalid barcode.`,
+      );
+    }
+    const existing = combined.get(validation.barcodeKey);
+    if (existing) {
+      existing.quantity += normalizeQuantity(row.quantity);
+      continue;
+    }
+    combined.set(validation.barcodeKey, {
+      ...row,
+      barcode: validation.normalized,
+      barcodeKey: validation.barcodeKey,
+      description: row.description?.trim() || `Frame ${validation.normalized}`,
+      quantity: normalizeQuantity(row.quantity),
+    });
+  }
+  return [...combined.values()];
+}
+
+function indexItemsByBarcode(items: RecallItem[]): Map<string, RecallItem> {
+  const byBarcode = new Map<string, RecallItem>();
+  for (const item of items) {
+    if (byBarcode.has(item.barcodeKey)) {
+      throw new Error(
+        `Campaign data contains duplicate recall item ${item.barcode}. Create a backup and resolve it before adding items.`,
+      );
+    }
+    byBarcode.set(item.barcodeKey, item);
+  }
+  return byBarcode;
+}
+
+function createRecallItem(
+  campaign: Campaign,
+  row: NormalizedRecallRow,
+  timestamp: string,
+): RecallItem {
+  return {
+    id: id("item"),
+    campaignId: campaign.id,
+    barcode: row.barcode,
+    barcodeKey: row.barcodeKey,
+    description: row.description,
+    brand: row.brand?.trim() || campaign.brand,
+    model: row.model?.trim() || undefined,
+    style: row.style?.trim() || undefined,
+    color: row.color?.trim() || undefined,
+    sku: row.sku?.trim() || undefined,
+    notes: row.notes?.trim() || undefined,
+    quantityRequired: row.quantity,
+    quantityFound: 0,
+    sourceRowNumber: row.sourceRowNumber,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function assertCampaignItemMutationAllowed(
+  campaign: Campaign,
+  options: CampaignItemMutationOptions,
+): void {
+  if (campaign.status === "archived" || campaign.status === "completed") {
+    throw new Error("Completed and archived campaigns are read-only.");
+  }
+  if (!options.allowActiveCampaign && campaign.status !== "paused") {
+    throw new Error("Pause this recall before changing its recall list.");
+  }
+  if (campaign.updatedAt !== options.expectedCampaignUpdatedAt) {
+    throw new Error("This recall changed after it was opened. Refresh and review the list again.");
+  }
 }
 
 export async function createCampaignWithItems(
@@ -84,50 +177,216 @@ export async function createCampaignWithItems(
     updatedAt: timestamp,
   };
 
-  const combined = new Map<string, ImportedRecallRow>();
-  for (const row of importedRows) {
-    const validation = validateBarcode(row.barcode);
-    if (!validation.valid || !validation.barcodeKey) {
-      throw new Error(
-        `Recall item on row ${row.sourceRowNumber ?? "unknown"} has an invalid barcode.`,
-      );
-    }
-    const existing = combined.get(validation.barcodeKey);
-    if (existing) {
-      existing.quantity = normalizeQuantity(existing.quantity) + normalizeQuantity(row.quantity);
-    } else {
-      combined.set(validation.barcodeKey, {
-        ...row,
-        barcode: validation.normalized,
-        quantity: normalizeQuantity(row.quantity),
-      });
-    }
-  }
-
-  const items: RecallItem[] = [...combined.entries()].map(([barcodeKey, row]) => ({
-    id: id("item"),
-    campaignId,
-    barcode: row.barcode,
-    barcodeKey,
-    description: row.description.trim() || `Frame ${row.barcode}`,
-    brand: row.brand?.trim() || input.brand.trim(),
-    model: row.model?.trim() || undefined,
-    style: row.style?.trim() || undefined,
-    color: row.color?.trim() || undefined,
-    sku: row.sku?.trim() || undefined,
-    notes: row.notes?.trim() || undefined,
-    quantityRequired: normalizeQuantity(row.quantity),
-    quantityFound: 0,
-    sourceRowNumber: row.sourceRowNumber,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }));
+  const items = normalizeImportedRows(importedRows).map((row) =>
+    createRecallItem(campaign, row, timestamp),
+  );
 
   await database.transaction("rw", database.campaigns, database.items, async () => {
     await database.campaigns.add(campaign);
     await database.items.bulkAdd(items);
   });
   return campaign;
+}
+
+export async function previewCampaignItemMerge(
+  campaignId: string,
+  importedRows: ImportedRecallRow[],
+  database: RetailRecallDatabase = db,
+): Promise<CampaignItemMergePreview> {
+  const normalizedRows = normalizeImportedRows(importedRows);
+  const [campaign, items, scans] = await Promise.all([
+    database.campaigns.get(campaignId),
+    database.items.where("campaignId").equals(campaignId).toArray(),
+    database.scans.where("campaignId").equals(campaignId).toArray(),
+  ]);
+  if (!campaign) throw new Error(`Campaign ${campaignId} was not found.`);
+
+  const byBarcode = indexItemsByBarcode(items);
+  const missCounts = new Map<string, number>();
+  for (const scan of scans) {
+    if (scan.outcome !== "miss" || scan.undoneAt || !scan.barcodeKey) continue;
+    missCounts.set(scan.barcodeKey, (missCounts.get(scan.barcodeKey) ?? 0) + 1);
+  }
+
+  const additions: CampaignItemMergeCandidate[] = [];
+  const existing: CampaignItemMergeCandidate[] = [];
+  for (const row of normalizedRows) {
+    const existingItem = byBarcode.get(row.barcodeKey);
+    const candidate: CampaignItemMergeCandidate = {
+      ...row,
+      priorMissCount: missCounts.get(row.barcodeKey) ?? 0,
+      existingItemId: existingItem?.id,
+    };
+    (existingItem ? existing : additions).push(candidate);
+  }
+
+  return {
+    campaignId,
+    campaignUpdatedAt: campaign.updatedAt,
+    additions,
+    existing,
+  };
+}
+
+export async function mergeCampaignItems(
+  campaignId: string,
+  importedRows: ImportedRecallRow[],
+  options: CampaignItemMutationOptions,
+  database: RetailRecallDatabase = db,
+): Promise<CampaignItemMergeResult> {
+  const normalizedRows = normalizeImportedRows(importedRows);
+  let result!: CampaignItemMergeResult;
+
+  await database.transaction("rw", database.campaigns, database.items, async () => {
+    const campaign = await database.campaigns.get(campaignId);
+    if (!campaign) throw new Error(`Campaign ${campaignId} was not found.`);
+    assertCampaignItemMutationAllowed(campaign, options);
+
+    const existingItems = await database.items.where("campaignId").equals(campaignId).toArray();
+    const byBarcode = indexItemsByBarcode(existingItems);
+    const additions = normalizedRows.filter((row) => !byBarcode.has(row.barcodeKey));
+    const skippedExistingItems = normalizedRows
+      .map((row) => byBarcode.get(row.barcodeKey))
+      .filter((item): item is RecallItem => Boolean(item));
+
+    if (!additions.length) {
+      result = { campaign, addedItems: [], skippedExistingItems };
+      return;
+    }
+
+    const timestamp = nextIsoAfter(campaign.updatedAt);
+    const addedItems = additions.map((row) => createRecallItem(campaign, row, timestamp));
+    await database.items.bulkAdd(addedItems);
+    await database.campaigns.update(campaignId, { updatedAt: timestamp });
+    result = {
+      campaign: { ...campaign, updatedAt: timestamp },
+      addedItems,
+      skippedExistingItems,
+    };
+  });
+
+  return result;
+}
+
+export async function addCampaignItem(
+  campaignId: string,
+  importedRow: ImportedRecallRow,
+  options: CampaignItemMutationOptions,
+  database: RetailRecallDatabase = db,
+): Promise<RecallItem> {
+  const result = await mergeCampaignItems(campaignId, [importedRow], options, database);
+  const added = result.addedItems[0];
+  if (!added) {
+    throw new Error(`Recall item ${importedRow.barcode} already exists in this campaign.`);
+  }
+  return added;
+}
+
+function optionalText(value: string | null): string | undefined {
+  return value?.trim() || undefined;
+}
+
+function requiredQuantity(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > 1_000_000) {
+    throw new Error("Required quantity must be a whole number between 1 and 1,000,000.");
+  }
+  return value;
+}
+
+export async function updateCampaignItem(
+  campaignId: string,
+  itemId: string,
+  patch: RecallItemUpdateInput,
+  options: RecallItemUpdateOptions,
+  database: RetailRecallDatabase = db,
+): Promise<RecallItem> {
+  let result!: RecallItem;
+
+  await database.transaction(
+    "rw",
+    database.campaigns,
+    database.items,
+    database.scans,
+    async () => {
+      const campaign = await database.campaigns.get(campaignId);
+      if (!campaign) throw new Error(`Campaign ${campaignId} was not found.`);
+      assertCampaignItemMutationAllowed(campaign, options);
+
+      const current = await database.items.get(itemId);
+      if (!current || current.campaignId !== campaignId) {
+        throw new Error(`Recall item ${itemId} was not found in this campaign.`);
+      }
+      if (current.updatedAt !== options.expectedItemUpdatedAt) {
+        throw new Error("This recall item changed after it was opened. Refresh and try again.");
+      }
+
+      const updated: RecallItem = { ...current };
+      if (patch.barcode !== undefined) {
+        const validation = validateBarcode(patch.barcode);
+        if (!validation.valid || !validation.barcodeKey) {
+          throw new Error("The replacement barcode is invalid.");
+        }
+        const collision = (
+          await database.items
+            .where("[campaignId+barcodeKey]")
+            .equals([campaignId, validation.barcodeKey])
+            .toArray()
+        ).find((candidate) => candidate.id !== itemId);
+        if (collision) {
+          throw new Error(`Recall item ${validation.normalized} already exists in this campaign.`);
+        }
+        if (validation.normalized !== current.barcode) {
+          const scanCount = await database.scans.where("itemId").equals(itemId).count();
+          if (current.quantityFound > 0 || scanCount > 0) {
+            throw new Error("The barcode cannot change after this recall item has been scanned.");
+          }
+        }
+        updated.barcode = validation.normalized;
+        updated.barcodeKey = validation.barcodeKey;
+      }
+      if (patch.description !== undefined) {
+        const description = patch.description.trim();
+        if (!description) throw new Error("Description is required.");
+        updated.description = description;
+      }
+      if (patch.brand !== undefined) updated.brand = optionalText(patch.brand);
+      if (patch.model !== undefined) updated.model = optionalText(patch.model);
+      if (patch.style !== undefined) updated.style = optionalText(patch.style);
+      if (patch.color !== undefined) updated.color = optionalText(patch.color);
+      if (patch.sku !== undefined) updated.sku = optionalText(patch.sku);
+      if (patch.notes !== undefined) updated.notes = optionalText(patch.notes);
+      if (patch.quantityRequired !== undefined) {
+        updated.quantityRequired = requiredQuantity(patch.quantityRequired);
+      }
+
+      const changed = (
+        [
+          "barcode",
+          "barcodeKey",
+          "description",
+          "brand",
+          "model",
+          "style",
+          "color",
+          "sku",
+          "notes",
+          "quantityRequired",
+        ] as const
+      ).some((field) => updated[field] !== current[field]);
+      if (!changed) {
+        result = current;
+        return;
+      }
+
+      const timestamp = nextIsoAfter(campaign.updatedAt, current.updatedAt);
+      updated.updatedAt = timestamp;
+      await database.items.put(updated);
+      await database.campaigns.update(campaignId, { updatedAt: timestamp });
+      result = updated;
+    },
+  );
+
+  return result;
 }
 
 export interface RecordScanOptions {
@@ -256,7 +515,7 @@ export async function undoLastScan(
         .equals(campaignId)
         .toArray();
       scan = recent
-        .filter((candidate) => !candidate.undoneAt)
+        .filter((candidate) => !candidate.undoneAt && candidate.source !== "legacy")
         .sort((left, right) => right.scannedAt.localeCompare(left.scannedAt))[0];
       if (!scan) return;
 

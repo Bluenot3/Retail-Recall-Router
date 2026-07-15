@@ -31,6 +31,12 @@ Complete every applicable item before staff use a new production release. Record
 - [ ] Empty files, unsupported files, and missing identifier columns fail safely.
 - [ ] Spreadsheet numeric/scientific-notation identifiers do not produce silent false matches.
 - [ ] A recall cannot activate until its mapping and counts are confirmed.
+- [ ] PDF native-text extraction is verified and falls back safely when text is unavailable.
+- [ ] JPG, PNG, and WebP OCR candidates remain editable and cannot be committed before source review.
+- [ ] Photo/PDF intake sends no document bytes to a remote service.
+- [ ] File, photo-count, page-count, image-size, and OCR-page limits fail with clear messages.
+- [ ] A paused recall accepts an addendum, skips existing UPCs, and preserves all prior scans and found counts.
+- [ ] Manual add rejects an invalid or duplicate UPC without partial changes.
 
 ## High-volume scan engine
 

@@ -113,6 +113,52 @@ export interface ImportedRecallRow {
   sourceRowNumber?: number;
 }
 
+export interface NormalizedRecallRow
+  extends Omit<ImportedRecallRow, "quantity"> {
+  barcodeKey: string;
+  quantity: number;
+}
+
+export interface CampaignItemMergeCandidate extends NormalizedRecallRow {
+  priorMissCount: number;
+  existingItemId?: string;
+}
+
+export interface CampaignItemMergePreview {
+  campaignId: string;
+  campaignUpdatedAt: string;
+  additions: CampaignItemMergeCandidate[];
+  existing: CampaignItemMergeCandidate[];
+}
+
+export interface CampaignItemMutationOptions {
+  expectedCampaignUpdatedAt: string;
+  /** Explicit internal-only escape hatch. Normal staff/UI writes require a paused campaign. */
+  allowActiveCampaign?: boolean;
+}
+
+export interface CampaignItemMergeResult {
+  campaign: Campaign;
+  addedItems: RecallItem[];
+  skippedExistingItems: RecallItem[];
+}
+
+export interface RecallItemUpdateInput {
+  barcode?: string;
+  description?: string;
+  brand?: string | null;
+  model?: string | null;
+  style?: string | null;
+  color?: string | null;
+  sku?: string | null;
+  notes?: string | null;
+  quantityRequired?: number;
+}
+
+export interface RecallItemUpdateOptions extends CampaignItemMutationOptions {
+  expectedItemUpdatedAt: string;
+}
+
 export interface RejectedRecallRow {
   rowNumber: number;
   reason: string;
@@ -141,7 +187,7 @@ export interface ColumnInference {
 
 export interface ImportResult {
   sourceName: string;
-  sourceType: "csv" | "tsv" | "xlsx" | "xls" | "text";
+  sourceType: "csv" | "tsv" | "xlsx" | "xls" | "text" | "pdf" | "image";
   rows: ImportedRecallRow[];
   rejected: RejectedRecallRow[];
   inference: ColumnInference;
@@ -213,4 +259,3 @@ export interface BackupPayload {
   scans: ScanRecord[];
   settings: AppSetting[];
 }
-

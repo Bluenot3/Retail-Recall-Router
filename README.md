@@ -22,7 +22,9 @@ The default location is **Philadelphia, PA** and can be changed for each recall 
 
 ## Supported recall lists
 
-Import `.csv`, `.tsv`, `.xlsx`, or `.xls` files. A downloadable starter file is included at [`public/recall-list-template.csv`](public/recall-list-template.csv).
+Import `.csv`, `.tsv`, `.xlsx`, or `.xls` files, paste rows, or use product-only PDFs and clear `.jpg`, `.png`, or `.webp` photos. A downloadable starter file is included at [`public/recall-list-template.csv`](public/recall-list-template.csv).
+
+PDF/photo reading runs locally in the browser. Every detected UPC and description remains editable and must be compared with the source before it can be added; the app never silently trusts OCR. Document files are limited to 25 MB each, five photos per batch, and ten OCR pages per batch. The first document-reading session needs the locally hosted OCR assets to load; the service worker caches successful same-origin requests for later offline use.
 
 The importer is designed to recognize common optical-list headings such as:
 
@@ -45,6 +47,8 @@ Review the detected barcode column and row count before starting a recall. Keep 
 5. Put green results in the recall bin, leave red results in place, and rescan orange results.
 6. Watch the remaining count fall as recall quantities are satisfied. Every repeated matching physical frame stays green and is logged as another recall piece; the unique list row is crossed off only when its required quantity is met.
 7. Download a backup and the required PDF/CSV report, then archive the completed recall.
+
+If a source list is corrected after scanning starts, choose **Manage list**. The app pauses scanning, compares the addendum against current UPCs, skips duplicates, and shows the exact number of new rows before confirmation. Staff can also add one missing frame manually or correct product details. Existing scan records, found quantities, and history are preserved.
 
 The scan field returns to focus after every result, so staff do not need to touch the mouse between frames.
 
@@ -90,7 +94,7 @@ pnpm preview
 
 ## Production deployment
 
-Run `pnpm build` and publish the generated `dist` directory as a static website. Use HTTPS for a normal production domain. The manual service worker and web app manifest provide offline app-shell support after the first successful visit.
+Run `pnpm build` and publish the generated `dist` directory as a static website. The build copies the OCR worker, WebAssembly cores, and English model from installed packages into same-origin static assets; no CDN is required at runtime. Use HTTPS for a normal production domain. The manual service worker and web app manifest provide offline app-shell support after the first successful visit.
 
 The repository intentionally contains no live recall lists or scan progress. Import recall files through the application and keep local working documents in the ignored `local-data/` or `uploads/` folders.
 
