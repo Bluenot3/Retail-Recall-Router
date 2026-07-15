@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Retail Recall Router</title>
+  <desc id="desc">An eyeglass frame and a scan beam on a deep green field.</desc>
+  <rect width="512" height="512" fill="#10251f"/>
+  <g transform="translate(52 52) scale(.8)">
+    <path d="M88 276c16-48 48-72 96-72h144c48 0 80 24 96 72" fill="none" stroke="#f3f1ea" stroke-width="28" stroke-linecap="round"/>
+    <circle cx="168" cy="288" r="68" fill="none" stroke="#e4a853" stroke-width="28"/>
+    <circle cx="344" cy="288" r="68" fill="none" stroke="#e4a853" stroke-width="28"/>
+    <path d="M236 276h40" fill="none" stroke="#f3f1ea" stroke-width="24" stroke-linecap="round"/>
+    <path d="M108 120h296M108 156h216" fill="none" stroke="#6fd09a" stroke-width="18" stroke-linecap="round"/>
+  </g>
+</svg>
